@@ -85,7 +85,7 @@ python -m ntfy_dispatch --config config.toml
 
 ## 写 handler
 
-在 `handlers/` 下新建模块，启动时会自动导入：
+最简单的做法是在 `handlers/` 下新建模块，启动时会自动导入；实际使用的 handler 建议放进独立的私有仓库，见下文。
 
 ```python
 from ntfy_dispatch import HandlerContext, Message, handler
@@ -122,15 +122,76 @@ target = "https://example.com/hook"
 
 handler 必须是同步函数。每个 handler 只有一个 worker 线程，因此 handler 内部状态不需要加锁。
 
-### 私有 handler 包
+### 把 handler 放进独立的私有仓库
 
-handler 不必放进本仓库：把私有包加入 `handler_packages` 即可，例如 `handler_packages = ["myhandlers"]`。安装方式与普通 Python 包相同：
+公开仓库只保留框架和示例。实际 handler 往往包含私有 topic、webhook 地址和内网服务名，这些一旦进了公开 git 历史就很难彻底清除，所以建议单独建一个私有仓库，把它作为普通 Python 包装进引擎。
+
+**1. 建仓库和包**
 
 ```bash
-pip install -e /path/to/private-handlers
+mkdir ntfy-handlers && cd ntfy-handlers
+git init -b main
+gh repo create ntfy-handlers --private --source=. --remote=origin
 ```
 
-包内以 `_` 开头的模块不会被扫描，适合放共享工具。`handler_packages` 里的包会被递归导入，所以包内模块不要在导入时做耗时或带副作用的事情，除非那就是注册 handler 的装饰器。
+目录约定：
+
+```text
+ntfy-handlers/
+├── pyproject.toml
+├── .gitignore          # 至少包含 config.toml、.env、state/、.venv/
+├── myhandlers/
+│   ├── __init__.py
+│   ├── _lib.py         # 共享工具；下划线开头不会被当成 handler 扫描
+│   └── forward.py
+├── tests/
+└── docs/HANDLERS.md    # topic → handler → 环境变量 的总表
+```
+
+最小 `pyproject.toml`：
+
+```toml
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "myhandlers"
+version = "0.1.0"
+requires-python = ">=3.11"
+# 引擎还没发布到 PyPI，不要在这里声明 ntfy-dispatch 依赖；
+# 两者共用同一个 venv 即可。
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["myhandlers"]
+```
+
+**2. 装进引擎的 venv**
+
+```bash
+# 在引擎目录
+uv pip install -e .
+uv pip install -e ../ntfy-handlers
+```
+
+**3. 让引擎加载它**
+
+```toml
+[core]
+handler_packages = ["myhandlers"]
+```
+
+`handlers` 是公开仓库里的示例包，不需要时从列表里去掉。包内以 `_` 开头的模块会被跳过，适合放 `_lib.py` 这样的共享工具；其余模块会被递归导入，所以不要在导入时做耗时或带副作用的事情，除非那就是注册 handler 的装饰器。
+
+**4. 约定**
+
+- 每个 handler 显式写 `name="..."`，格式 `<领域>_<动作>`，全小写、不带点号。它同时是 `[handlers.<name>]` 配置段、logger 名和 stats 键，上线后不要改。
+- `[handlers.<name>]` 只放非敏感配置；token 等密钥一律用 `ctx.env("XXX")`。
+- 私有仓库的 `docs/HANDLERS.md` 维护 topic 清单和 handler 模板；部署用的 `config.toml` 不进版本库。
+- 在私有仓库里记录适配的引擎版本或接口，升级引擎时先跑两边测试，再跑 `--check`。
+
+部署时 systemd 指向的 venv 必须同时装了引擎和私有包；私有包是 editable 安装，更新私有仓库后重启进程即可生效。
 
 ### 测试 handler
 

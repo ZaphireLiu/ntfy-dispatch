@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from ntfy_dispatch import handler
+from ntfy_dispatch.publisher import PublishError, SelfPublishError
 from ntfy_dispatch.registry import get_registry
 from ntfy_dispatch.testing import FakeContext, make_message
 
@@ -80,3 +81,29 @@ def test_registry_can_be_used_in_tests():
 
 def test_registry_is_reset_between_tests():
     assert get_registry().handlers() == ()
+
+
+def test_fake_context_publish_records_calls():
+    ctx = FakeContext(name="demo", topics=["alerts"], listened_topics=["alerts", "other"])
+
+    result = ctx.publish("other", "hello", title="Title")
+
+    assert result.id == "fake-1"
+    assert result.topic == "other"
+    assert ctx.published == [{"topic": "other", "message": "hello", "title": "Title"}]
+
+
+def test_fake_context_publish_blocks_own_topic():
+    ctx = FakeContext(name="demo", topics=["alerts"])
+
+    with pytest.raises(SelfPublishError):
+        ctx.publish("alerts", "hello")
+
+    assert ctx.published == []
+
+
+def test_fake_context_publish_rejects_invalid_topic():
+    ctx = FakeContext(name="demo", topics=["alerts"])
+
+    with pytest.raises(PublishError, match="invalid topic"):
+        ctx.publish("bad topic!", "hello")

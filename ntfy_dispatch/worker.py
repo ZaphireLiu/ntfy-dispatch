@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from .models import Message
+from .publisher import Publisher, PublishResult
 from .registry import HandlerSpec
 from .stats import Stats
 
@@ -35,6 +36,9 @@ class HandlerContext:
         instance: str,
         shutdown_event: threading.Event,
         http_timeout: float,
+        publisher: Publisher | None = None,
+        topics: frozenset[str] = frozenset(),
+        listened_topics: frozenset[str] = frozenset(),
     ) -> None:
         self.name = name
         self.config = dict(config)
@@ -43,6 +47,9 @@ class HandlerContext:
         self.shutdown_event = shutdown_event
         self._http_timeout = http_timeout
         self._http: httpx.Client | None = None
+        self._publisher = publisher
+        self._topics = topics
+        self._listened_topics = listened_topics
 
     @property
     def http(self) -> httpx.Client:
@@ -61,6 +68,25 @@ class HandlerContext:
         if value is None:
             raise RuntimeError(f"environment variable {name!r} is not set")
         return value
+
+    def publish(self, topic: str, message: str = "", **fields: Any) -> PublishResult:
+        """Publish a message to the ntfy instance this process is subscribed to.
+
+        Publishing to a topic this handler consumes raises
+        :class:`~ntfy_dispatch.publisher.SelfPublishError`.  Publishing to a
+        topic consumed by another handler logs a one-time warning.
+        """
+
+        if self._publisher is None:
+            raise RuntimeError("publish is not available in this context")
+        return self._publisher.publish(
+            handler=self.name,
+            topic=topic,
+            own_topics=self._topics,
+            listened_topics=self._listened_topics,
+            message=message,
+            **fields,
+        )
 
     def close(self) -> None:
         client = self._http
@@ -83,6 +109,8 @@ class HandlerWorker:
         shutdown_event: threading.Event,
         stop_event: threading.Event,
         stats: Stats,
+        publisher: Publisher | None = None,
+        listened_topics: frozenset[str] = frozenset(),
     ) -> None:
         self.spec = spec
         queue_size = spec.queue_size if spec.queue_size is not None else default_queue_size
@@ -107,6 +135,9 @@ class HandlerWorker:
             instance=instance,
             shutdown_event=shutdown_event,
             http_timeout=http_timeout,
+            publisher=publisher,
+            topics=spec.topics,
+            listened_topics=listened_topics,
         )
 
     def start(self) -> None:

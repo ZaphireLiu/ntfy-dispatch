@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
 import threading
 import time
@@ -15,12 +14,12 @@ from urllib.parse import quote
 
 import httpx
 
-from .config import AuthConfig, ConfigError, NtfyConfig
+from . import ntfy_http
+from .config import NtfyConfig
 from .dedupe import DedupeStore
 from .models import Message
 from .registry import HandlerSpec
 from .stats import Stats
-from .version import __version__
 
 STABLE_CONNECTION_SECONDS = 5.0
 
@@ -68,39 +67,9 @@ class NtfyReader:
         self._lock = threading.Lock()
         self._client: httpx.Client | None = None
         self._response: httpx.Response | None = None
-        self._auth = self._build_auth(config.auth)
-        self._headers = self._build_headers(config.auth)
-
-    @staticmethod
-    def _build_auth(auth: AuthConfig) -> httpx.BasicAuth | None:
-        if auth.type != "basic":
-            return None
-        username_env = auth.username_env
-        password_env = auth.password_env
-        if not username_env or not password_env:
-            raise ConfigError("basic auth requires username_env and password_env")
-        username = os.environ.get(username_env)
-        password = os.environ.get(password_env)
-        if username is None or password is None:
-            missing = [
-                name
-                for name, value in ((username_env, username), (password_env, password))
-                if value is None
-            ]
-            raise ConfigError("missing required environment variable(s): " + ", ".join(missing))
-        return httpx.BasicAuth(username, password)
-
-    @staticmethod
-    def _build_headers(auth: AuthConfig) -> dict[str, str]:
-        headers = {"User-Agent": f"ntfy-dispatch/{__version__}"}
-        if auth.type == "token":
-            if not auth.token_env:
-                raise ConfigError("token auth requires token_env")
-            token = os.environ.get(auth.token_env)
-            if not token:
-                raise ConfigError(f"environment variable {auth.token_env!r} is not set")
-            headers["Authorization"] = f"Bearer {token}"
-        return headers
+        # Validate credentials eagerly so a bad config fails at startup.
+        ntfy_http.build_auth(config.auth)
+        ntfy_http.build_headers(config.auth)
 
     def build_url(self) -> str:
         topics = ",".join(sorted(self._topics))
@@ -144,20 +113,14 @@ class NtfyReader:
                 pass
 
     def _new_client(self) -> httpx.Client:
-        verify: bool | str = self._config.tls_verify
-        if self._config.ca_file is not None:
-            verify = str(self._config.ca_file)
-        return httpx.Client(
-            verify=verify,
+        return ntfy_http.build_client(
+            self._config,
             timeout=httpx.Timeout(
                 connect=self._config.connect_timeout,
                 read=self._config.read_timeout,
                 write=10.0,
                 pool=10.0,
             ),
-            auth=self._auth,
-            follow_redirects=True,
-            trust_env=True,
         )
 
     def _run(self) -> None:
@@ -228,7 +191,6 @@ class NtfyReader:
                 "GET",
                 self.build_url(),
                 params=self.build_params(),
-                headers=self._headers,
             ) as response:
                 with self._lock:
                     self._response = response

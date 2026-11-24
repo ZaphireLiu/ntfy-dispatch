@@ -3,7 +3,12 @@ from __future__ import annotations
 import threading
 import time
 
+import httpx
+import pytest
+
+from ntfy_dispatch.config import NtfyConfig
 from ntfy_dispatch.models import Message
+from ntfy_dispatch.publisher import Publisher, SelfPublishError
 from ntfy_dispatch.registry import HandlerSpec
 from ntfy_dispatch.stats import Stats
 from ntfy_dispatch.worker import HandlerWorker
@@ -29,7 +34,9 @@ def make_spec(func, *, name: str = "worker-test", queue_size: int | None = 10) -
     )
 
 
-def make_worker(func, *, queue_size: int | None = 10, config=None):
+def make_worker(
+    func, *, queue_size: int | None = 10, config=None, publisher=None, listened_topics=frozenset()
+):
     stats = Stats()
     shutdown_event = threading.Event()
     stop_event = threading.Event()
@@ -42,6 +49,8 @@ def make_worker(func, *, queue_size: int | None = 10, config=None):
         shutdown_event=shutdown_event,
         stop_event=stop_event,
         stats=stats,
+        publisher=publisher,
+        listened_topics=listened_topics,
     )
     return worker, stats, shutdown_event, stop_event
 
@@ -161,3 +170,58 @@ def test_handler_context(monkeypatch):
     assert str(seen["logger"]).endswith("worker-test")
     assert seen["http"] is not None
     assert seen["env"] == "from-env"
+
+
+def make_publisher(requests: list[httpx.Request]) -> Publisher:
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"id": "p1", "topic": "other", "time": 1},
+            request=request,
+        )
+
+    return Publisher(
+        NtfyConfig(base_url="https://ntfy.example.com"),
+        timeout=1.0,
+        transport=httpx.MockTransport(respond),
+    )
+
+
+def test_context_publish_uses_worker_topics():
+    requests: list[httpx.Request] = []
+    publisher = make_publisher(requests)
+    worker, _, _, _ = make_worker(
+        lambda message, ctx: None,
+        publisher=publisher,
+        listened_topics=frozenset({"t", "other"}),
+    )
+
+    try:
+        result = worker.ctx.publish("other", "hi")
+    finally:
+        publisher.close()
+
+    assert result.id == "p1"
+    assert len(requests) == 1
+
+
+def test_context_publish_blocks_own_topic():
+    requests: list[httpx.Request] = []
+    publisher = make_publisher(requests)
+    worker, _, _, _ = make_worker(lambda message, ctx: None, publisher=publisher)
+
+    try:
+        with pytest.raises(SelfPublishError):
+            worker.ctx.publish("t", "hi")
+    finally:
+        publisher.close()
+
+    assert requests == []
+
+
+def test_context_publish_without_publisher():
+    worker, _, _, _ = make_worker(lambda message, ctx: None)
+
+    with pytest.raises(RuntimeError, match="not available"):
+        worker.ctx.publish("other", "hi")

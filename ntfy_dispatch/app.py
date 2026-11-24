@@ -17,6 +17,7 @@ from .config import (
     validate_runtime_config,
 )
 from .dedupe import DedupePruner, DedupeStore
+from .publisher import Publisher
 from .registry import (
     Registry,
     get_registry,
@@ -53,6 +54,7 @@ class App:
         registry: Registry,
         stats: Stats,
         dedupe: DedupeStore,
+        publisher: Publisher,
         workers: dict[str, HandlerWorker],
         reader: NtfyReader,
         shutdown_event: threading.Event,
@@ -64,6 +66,7 @@ class App:
         self.registry = registry
         self.stats = stats
         self.dedupe = dedupe
+        self.publisher = publisher
         self.workers = workers
         self.reader = reader
         self.shutdown_event = shutdown_event
@@ -87,6 +90,7 @@ class App:
 
         config.core.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         stats = Stats()
+        publisher = Publisher(config.ntfy, timeout=config.core.http_timeout)
         dedupe = DedupeStore(
             config.dedupe.path,
             retention_days=config.dedupe.retention_days,
@@ -111,6 +115,8 @@ class App:
                     shutdown_event=shutdown_event,
                     stop_event=worker_stop_event,
                     stats=stats,
+                    publisher=publisher,
+                    listened_topics=topics,
                 )
 
             reader = NtfyReader(
@@ -134,6 +140,7 @@ class App:
                 shutdown_event,
             )
         except Exception:
+            publisher.close()
             dedupe.close()
             raise
 
@@ -142,6 +149,7 @@ class App:
             registry=registry,
             stats=stats,
             dedupe=dedupe,
+            publisher=publisher,
             workers=workers,
             reader=reader,
             shutdown_event=shutdown_event,
@@ -204,6 +212,11 @@ class App:
             self.stats_reporter.join(timeout=1.0)
         if self.dedupe_pruner.ident is not None:
             self.dedupe_pruner.join(timeout=1.0)
+
+        try:
+            self.publisher.close()
+        except Exception:
+            logger.exception("failed to close publisher")
 
         if reader_stopped:
             self.dedupe.close()

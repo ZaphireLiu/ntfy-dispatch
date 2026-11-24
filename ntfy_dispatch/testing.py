@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .models import Message
+from .publisher import PublishResult, check_publish_target
 from .registry import reset_registry
 
 __all__ = ["FakeContext", "make_message", "reset_registry"]
@@ -53,7 +54,8 @@ class FakeContext:
     ``config`` mirrors ``[handlers.<name>]``.  ``env`` is an explicit mapping
     instead of the process environment so tests stay hermetic.  ``http`` can be
     injected, usually an ``httpx.Client`` built on ``httpx.MockTransport``;
-    accessing it without a client raises.
+    accessing it without a client raises.  ``publish`` records calls in
+    :attr:`published` and applies the same topic guard as the real context.
     """
 
     def __init__(
@@ -64,6 +66,8 @@ class FakeContext:
         instance: str = "test",
         env: Mapping[str, str] | None = None,
         http: Any = None,
+        topics: Iterable[str] = (),
+        listened_topics: Iterable[str] | None = None,
     ) -> None:
         self.name = name
         self.config = dict(config or {})
@@ -72,6 +76,11 @@ class FakeContext:
         self.shutdown_event = threading.Event()
         self._env = dict(env or {})
         self._http = http
+        self._topics = frozenset(topics)
+        self._listened_topics = frozenset(
+            listened_topics if listened_topics is not None else topics
+        )
+        self.published: list[dict[str, Any]] = []
 
     @property
     def http(self) -> Any:
@@ -85,6 +94,22 @@ class FakeContext:
         if default is not None:
             return default
         raise RuntimeError(f"environment variable {name!r} is not set")
+
+    def publish(self, topic: str, message: str = "", **fields: Any) -> PublishResult:
+        warn = check_publish_target(
+            handler=self.name,
+            topic=topic,
+            own_topics=self._topics,
+            listened_topics=self._listened_topics,
+        )
+        if warn:
+            self.logger.warning(
+                "handler %r published to topic %r which this dispatch instance also consumes",
+                self.name,
+                topic,
+            )
+        self.published.append({"topic": topic, "message": message, **fields})
+        return PublishResult(id=f"fake-{len(self.published)}", topic=topic, time=0)
 
     def close(self) -> None:
         """Match ``HandlerContext.close``; fake clients are owned by the test."""

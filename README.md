@@ -118,9 +118,41 @@ target = "https://example.com/hook"
 - `http`：该 handler 独占的懒加载 `httpx.Client`；
 - `instance`：ntfy 实例名；
 - `shutdown_event`：进程退出信号；
-- `env(name, default)`：读取环境变量。
+- `env(name, default)`：读取环境变量；
+- `publish(topic, message, **fields)`：向 ntfy 发布一条消息，见下文。
 
 handler 必须是同步函数。每个 handler 只有一个 worker 线程，因此 handler 内部状态不需要加锁。
+
+### 发布消息
+
+`ctx.publish()` 用 ntfy 的 [JSON 发布接口](https://docs.ntfy.sh/publish/#publish-as-json) 向当前实例的指定 topic 发一条消息：
+
+```python
+@handler(topics=["doorbell"], name="forward_doorbell")
+def forward_doorbell(msg: Message, ctx: HandlerContext) -> None:
+    ctx.publish(
+        "family-phones",
+        f"有人按门铃：{msg.message}",
+        title="门铃",
+        priority=4,
+        tags=("bell",),
+    )
+```
+
+支持的字段与 ntfy 的 JSON 发布一致：`message`、`title`、`priority`（1–5）、`tags`、`actions`、`click`、`attach`、`filename`、`markdown`、`icon`、`delay`、`timezone`、`email`、`call`、`sequence_id`，以及透传未知字段的 `extra`。返回值是 `PublishResult`，带 ntfy 生成的消息 `id`。
+
+发布前会做 topic 校验：
+
+- 发给**该 handler 自己订阅的 topic**：抛 `SelfPublishError`，请求不会发出。
+- 发给**本进程其他 handler 订阅的 topic**：记一条 WARNING（每个 handler + topic 只记一次），然后正常发送。
+- 发给其他 topic：直接发送。
+
+注意：
+
+- 发布是同步的，会占用当前 handler 的 worker；ntfy 慢会拖慢该 handler 的队列。
+- 失败抛 `PublishError`，不会自动重试；需要保证的 handler 自己用重试逻辑，并让下游幂等。
+- 发布只做直连检查：A→B→A 这类跨 handler 循环仍可能出现，设计 handler 时要保证发布关系无环。
+- 认证沿用 `[ntfy]` 配置，token 需要写权限；`auth = "none"` 时任何人都能向该 topic 发布。
 
 ### 把 handler 放进独立的私有仓库
 

@@ -1,0 +1,37 @@
+[core]
+log_level = "INFO"
+state_dir = "state"
+handler_packages = ["handlers"]
+queue_size = 1000
+stats_interval = 300
+shutdown_drain_seconds = 10
+http_timeout = 10
+
+[ntfy]
+name = "default"
+base_url = "https://ntfy.sh"
+
+# none | token | basic
+auth = "none"
+# token_env = "NTFY_TOKEN"
+# username_env = "NTFY_USER"
+# password_env = "NTFY_PASS"
+
+read_timeout = 120
+connect_timeout = 10
+min_backoff = 1
+max_backoff = 60
+resume = true
+resume_overlap_seconds = 120
+tls_verify = true
+# ca_file = "ca.pem"
+
+[dedupe]
+retention_days = 7
+max_rows = 200000
+memory_cache = 10000
+prune_interval_seconds = 3600
+
+[handlers.example]
+# 该段会作为 ctx.config 传给名为 "example" 的 handler。
+# print_body = false

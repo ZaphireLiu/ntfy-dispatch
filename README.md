@@ -122,6 +122,48 @@ target = "https://example.com/hook"
 
 handler 必须是同步函数。每个 handler 只有一个 worker 线程，因此 handler 内部状态不需要加锁。
 
+### 私有 handler 包
+
+handler 不必放进本仓库：把私有包加入 `handler_packages` 即可，例如 `handler_packages = ["myhandlers"]`。安装方式与普通 Python 包相同：
+
+```bash
+pip install -e /path/to/private-handlers
+```
+
+包内以 `_` 开头的模块不会被扫描，适合放共享工具。`handler_packages` 里的包会被递归导入，所以包内模块不要在导入时做耗时或带副作用的事情，除非那就是注册 handler 的装饰器。
+
+### 测试 handler
+
+`ntfy_dispatch.testing` 提供 `make_message()` 和 `FakeContext`，可以不启动进程直接调用 handler：
+
+```python
+import httpx
+
+from ntfy_dispatch.testing import FakeContext, make_message
+
+from myhandlers.forward import forward
+
+
+def test_forward_posts_to_webhook():
+    requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204)
+
+    ctx = FakeContext(
+        name="forward",
+        config={"target": "https://example.com/hook"},
+        http=httpx.Client(transport=httpx.MockTransport(respond)),
+    )
+
+    forward(make_message(id="m1", message="hello"), ctx)
+
+    assert len(requests) == 1
+```
+
+安装本包后，pytest 会通过 `pytest11` entry point 自动加载 `ntfy_dispatch.pytest_plugin`，在每个测试前后重置全局 registry，因此多个测试文件可以放心导入注册了同名 handler 的模块。
+
 ## 语义与注意事项
 
 - **at-most-once**：消息先写去重记录再入队；进程崩溃会丢失队列中未处理的消息，但重启后不会重复处理已标记的消息。

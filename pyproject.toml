@@ -21,6 +21,9 @@ dev = [
 [project.scripts]
 ntfy-dispatch = "ntfy_dispatch.cli:main"
 
+[project.entry-points.pytest11]
+ntfy_dispatch = "ntfy_dispatch.pytest_plugin"
+
 [tool.hatch.build.targets.wheel]
 packages = ["ntfy_dispatch", "handlers"]
 

@@ -2,6 +2,8 @@
 log_level = "INFO"
 state_dir = "state"
 handler_packages = ["handlers"]
+# 私有 handler 包可以追加，例如：
+# handler_packages = ["handlers", "myhandlers"]
 queue_size = 1000
 stats_interval = 300
 shutdown_drain_seconds = 10
